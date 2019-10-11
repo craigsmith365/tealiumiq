@@ -1,0 +1,197 @@
+/**
+ * @author Mustafa Temel <mustafa.temel@eurostar.com>
+ * @description DIP-231
+ * @scope All Tags - After Load Rules
+ * @version 1.8
+ */
+
+(function (gl) {
+  try {
+    if (!gl) {
+      return false;
+    }
+
+    var scope = {
+      debug: false,
+      emailPattern: /\b[\w.-]+@[\w.-]+\.\w{2,4}\b/gim,
+      // eslint-disable-next-line max-len
+      postcodePattern: /\b(GIR ?0AA|SAN ?TA1|(?:[A-PR-UWYZ](?:\d{0,2}|[A-HK-Y]\d|[A-HK-Y]\d\d|\d[A-HJKSTUW]|[A-HK-Y]\d[ABEHMNPRV-Y])) ?\d[ABD-HJLNP-UW-Z]{2})\b/gim,
+      // eslint-disable-next-line max-len
+      telNoPattern: /(?:(?:\(?(?:0(?:0|11)\)?[\s-]?\(?|\+)44\)?[\s-]?(?:\(?0\)?[\s-]?)?)|(?:\(?0))(?:(?:\d{5}\)?[\s-]?\d{4,5})|(?:\d{4}\)?[\s-]?(?:\d{5}|\d{3}[\s-]?\d{3}))|(?:\d{3}\)?[\s-]?\d{3}[\s-]?\d{3,4})|(?:\d{2}\)?[\s-]?\d{4}[\s-]?\d{4}))(?:[\s-]?(?:x|ext\.?|#)\d{3,4})?/gim,
+      complete: false
+    };
+
+    /**
+     * List of Tealium data layer variables to scan for PII.
+     * customer_email   => Custom dimension 147
+     * dom.url          => Custom dimension 15
+     * esClientIdJoined => Custom dimension 150
+     * spaPagePath      => page
+     */
+    scope.dataVarList = [
+      'customer_email',
+      'dom.url',
+      'esClientIdJoined',
+      'spaPagePath'
+    ];
+
+    /**
+     * Checks if the given value is of type string and is not empty.
+     * @param {*} v
+     * @return {boolean}
+     */
+    scope.isNonEmptyString = function (v) {
+      return (typeof v === 'string' && v.length > 0);
+    };
+
+    /**
+     * @todo gl.utag.data or gl.utag_data ?
+     * This script will execute only if the conditions within this function are met.
+     * @return {boolean}
+     */
+    scope.willExecute = function () {
+      if (!(gl.utag && gl.utag.data)) {
+        scope.debug && gl.console.info('++++++++ esPIIScanner will NOT execute.');
+        return false;
+      }
+      var avail = scope.dataVarList.filter(function (v) {
+        return (scope.isNonEmptyString(v) && scope.isNonEmptyString(gl.utag.data[v]));
+      });
+
+      if (avail.length > 0) {
+        scope.debug && gl.console.info('++++++++ esPIIScanner will execute.');
+      } else {
+        scope.debug && gl.console.info('++++++++ esPIIScanner will NOT execute.');
+      }
+
+      return (avail.length > 0);
+    };
+
+    /**
+     * Creates a string mask based on the given string using a consistent prefix/suffix.
+     * @param {string} v
+     * @return {string}
+     */
+    scope.getStringMask = function (v) {
+      var prefixAndSuffix = '+';
+      return [prefixAndSuffix, (scope.isNonEmptyString(v) ? v : 'Redacted'), prefixAndSuffix].join('');
+    };
+
+    /**
+     * Masks all email address patterns within the given string.
+     * @param {string} v 
+     * @return {string}
+     */
+    scope.maskEmail = function (v) {
+      var emailPattern = scope.emailPattern;
+      var emailMask = scope.getStringMask('EmailRedacted');
+      if (emailPattern.test(v)) {
+        v = v.replace(emailPattern, emailMask);
+      }
+      return v;
+    };
+
+    /**
+     * Masks all UK postcode patterns within the given string.
+     *           -----------
+     * @param {string} v 
+     * @return {string}
+     */
+    scope.maskPostcode = function (v) {
+      var postcodePattern = scope.postcodePattern;
+      var postcodeMask = scope.getStringMask('PostcodeRedacted');
+      if (postcodePattern.test(v)) {
+        v = v.replace(postcodePattern, postcodeMask);
+      }
+      return v;
+    };
+
+    /**
+     * @todo gl.utag.data or gl.utag_data ?
+     * Scans the given Tealium data layer variable for PII and applies string masking where necessary.
+     * Email address patterns, names, passwords, address details, and UK postcode patterns are scanned for.
+     * @param {string} dataVar 
+     */
+    scope.maskDataVar = function (dataVar) {
+      try {
+        var value = gl.utag.data[dataVar];
+        scope.debug && gl.console.info('BEFORE MASK', value);
+        
+        if (!value) {
+          return false;
+        }
+  
+        value = scope.maskEmail(value); // Apply email address pattern masking.
+        value = scope.maskPostcode(value); // Apply UK postcode pattern masking.
+  
+        // URL[ component] related variables
+        if ((dataVar === 'dom.url' || dataVar === 'spaPagePath') && /\?/.test(value)) {
+          var qMark = value.split('?');
+          if (/(mob(ile)?|phone|tel(ephone)?)/gim.test(qMark[0])) {
+            var telNoPattern = scope.telNoPattern;
+            var telNoMask = scope.getStringMask('TelephoneNumberRedacted');
+            qMark[0] = qMark[0].replace(telNoPattern, telNoMask);
+          } else if (/name=(.*?)$/gim.test(qMark[0])) { // @todo Standalone conditional statement ?
+            qMark[0] = qMark[0].replace(/name=(.*?)$/gim, scope.getStringMask('NameRedacted'));
+          }
+          if (qMark.length > 1) {
+            var urlParams = qMark[1].split('&');
+            var urlParamsMasked = urlParams.map(function (nameValue) {
+              var nameValueSplit = nameValue.split('=');
+              if (!/redacted/gim.test(nameValueSplit[1])
+                && /(mob(ile)?|phone|tel(ephone)?)$/gim.test(nameValueSplit[0])) {
+                nameValueSplit[1] = scope.getStringMask('TelephoneNumberRedacted');
+              } else if (!/redacted/gim.test(nameValueSplit[1]) && /(name(_xchannel)?)$/gim.test(nameValueSplit[0]) 
+                && !/house/gim.test(nameValueSplit[0])) {
+                nameValueSplit[1] = scope.getStringMask('NameRedacted');
+              } else if (!/redacted/gim.test(nameValueSplit[1]) && /(password|pwd)$/gim.test(nameValueSplit[0])) {
+                nameValueSplit[1] = scope.getStringMask('PasswordRedacted');
+              } else if (!/redacted/gim.test(nameValueSplit[1])
+                && /(addressline1|(town)?city|house(name|number)|town)$/gim.test(nameValueSplit[0])) {
+                nameValueSplit[1] = scope.getStringMask('AddressRedacted');
+              }
+              return [nameValueSplit[0], nameValueSplit[1]].join('=');
+            }).join('&');
+            value = [qMark[0], urlParamsMasked].join('?');
+          }
+        }
+  
+        scope.debug && gl.console.info('AFTER MASK', value);
+        scope.debug && gl.console.info('-----------------------------------------------------------------------------');
+        
+        gl.utag.data[dataVar] = value;
+        // b[dataVar] = value;
+      } catch (maskDataVarError) {
+        gl.console.log(maskDataVarError);
+      }
+    };
+
+    /**
+     * Kicks off PII scan.
+     */
+    scope.start = function () {
+      if (!scope.complete && scope.willExecute()) {
+        scope.dataVarList.map(function (v) {
+          scope.maskDataVar(v);
+        });
+        scope.complete = true;
+      }
+    };
+
+    gl['esPIIScanner'] = scope;
+
+    scope.start();
+  } catch (err) {
+    gl.console.log(err);
+  }
+})(window);
+
+/**
+ * @todo: Object property accessors using the [] format should replaced with the . format.
+ * e.g. b[data] should be replaced with b.data
+ * 
+ * @todo: Only console.log (no console.error, etc.) should be used for logging;
+ * console.log should only execute on Tealium's DEV publish environment.
+ * 
+ * @todo: Review.
+ */
