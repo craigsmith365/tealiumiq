@@ -1,0 +1,48 @@
+/**
+ * @author Craig Smith <craig.smith@eurostar.com>
+ * @version 1.0
+ */
+
+window.milestones = [25, 50, 75, 90, 100]; //Set these to when you want to fire the events
+window.nonIntMap = ['','','','','']; // Must match number of entries in milestones
+window.milestoneRunOnce = [];
+var winheight = window.innerHeight || (document.documentElement || document.body).clientHeight;
+
+function getDocHeight() {
+    var D = document;
+    return Math.max(
+        D.body.scrollHeight, D.documentElement.scrollHeight,
+        D.body.offsetHeight, D.documentElement.offsetHeight,
+        D.body.clientHeight, D.documentElement.clientHeight
+    )
+}
+var docheight = getDocHeight()
+
+function amountscrolled() {
+    var winheight = window.innerHeight || (document.documentElement || document.body).clientHeight
+    var docheight = getDocHeight()
+    var scrollTop = window.pageYOffset || (document.documentElement || document.body.parentNode || document.body).scrollTop
+    var trackLength = docheight - winheight
+    var pctScrolled = Math.floor(scrollTop / trackLength * 100) // gets percentage scrolled (ie: 80 or NaN if tracklength == 0)
+    for (var i = 0; i < milestones.length; i++) {
+        if (pctScrolled == milestones[i] && milestones.indexOf(milestones[i]) && !milestoneRunOnce[i]) {
+            utag.DB(pctScrolled + '% scrolled');
+            window.milestoneRunOnce[i] = true;
+            utag.data['app_name'] = utag.data['app_name'] || "";
+            utag.data['page_name'] = utag.data['page_name'] || "";
+
+            utag.link({
+    'event'                : 'TealiumLink',
+    'eventName'            : 'ScrollEvent',
+    'eventCategory'        :  utag.data['app_name'] + '_' + utag.data['page_name'],
+    'eventAction'          : 'OnScroll',
+    'eventLabel'           : utag.data['app_name'] + '_' + utag.data['page_name'] + '_Scrolled_' + pctScrolled,
+    'eventNonInteraction' :  window.nonIntMap[i]
+});
+            
+        }
+    }
+}
+window.addEventListener("scroll", function() {
+    amountscrolled()
+}, false)
